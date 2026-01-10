@@ -27,6 +27,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <errno.h>
+#include <stddef.h>
 #ifdef HAVE_LIBACARS
 #include <sys/time.h>
 #include <libacars/libacars.h>
@@ -332,10 +333,10 @@ static int fmt_sv(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, size_t
 	gmtime_r(&(tv.tv_sec), &tmp);
 
 	return snprintf(buf, bufsz,
-		       "%8s %1d %02d/%02d/%04d %02d:%02d:%02d %1d %03d %1c %7s %1c %2s %1c %4s %6s %s",
-		       R.idstation, chn + 1, tmp.tm_mday, tmp.tm_mon + 1,
-		       tmp.tm_year + 1900, tmp.tm_hour, tmp.tm_min, tmp.tm_sec,
-		       msg->err, (int)(msg->lvl), msg->mode, msg->addr, msg->ack, msg->label,
+			"%8s %1d %02d/%02d/%04d %02d:%02d:%02d %1d %03d %1c %7s %1c %2s %1c %4s %6s %s",
+			R.idstation, chn + 1, tmp.tm_mday, tmp.tm_mon + 1,
+			tmp.tm_year + 1900, tmp.tm_hour, tmp.tm_min, tmp.tm_sec,
+			msg->err, (int)(msg->lvl), msg->mode, msg->addr, msg->ack, msg->label,
 			msg->bid ? msg->bid : '.', msg->no, msg->fid, msg->txt ? msg->txt : "");
 }
 
@@ -367,7 +368,7 @@ static int fmt_time(struct timeval tv, char *buf, size_t bufsz)
 	gmtime_r(&(tv.tv_sec), &tmp);
 
 	return snprintf(buf, bufsz, "%02d:%02d:%02d.%03ld",
-			tmp.tm_hour, tmp.tm_min, tmp.tm_sec, tv.tv_usec / 1000);
+			tmp.tm_hour, tmp.tm_min, tmp.tm_sec, tv.tv_usec / 1000L);
 }
 
 static int fmt_date(struct timeval tv, char *buf, size_t bufsz)
@@ -391,10 +392,10 @@ static int fmt_msg(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, size_
 	int len = 0;
 
 	if (R.inmode >= IN_RTL)
-		len += snprintf(buf + len, bufsz - len, "[#%1d (F:%3.3f L:%+5.1f E:%1d) ", chn + 1,
-			R.channels[chn].Fr / 1000000.0, msg->lvl, msg->err);
+		len += snprintf(buf + len, bufsz - len, "[#%1d (F:%3.3f L:%+5.1f/%.1f E:%1d) ", chn + 1,
+			R.channels[chn].Fr / 1000000.0, msg->lvl, msg->nf, msg->err);
 	else
-		len += snprintf(buf + len, bufsz - len, "[#%1d (L:%+5.1f E:%1d) ", chn + 1, msg->lvl, msg->err);
+		len += snprintf(buf + len, bufsz - len, "[#%1d (L:%+5.1f/%.1f E:%1d) ", chn + 1, msg->lvl, msg->nf, msg->err);
 
 	if (R.inmode != IN_SNDFILE)
 		len += fmt_date(tv, buf + len, bufsz - len);
@@ -416,14 +417,12 @@ static int fmt_msg(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, size_
 		}
 		if (msg->sublabel[0] != '\0') {
 			len += snprintf(buf + len, bufsz - len, "\nSublabel: %s", msg->sublabel);
-			if (msg->mfi[0] != '\0') {
+			if (msg->mfi[0] != '\0')
 				len += snprintf(buf + len, bufsz - len, " MFI: %s", msg->mfi);
-			}
 		}
 #ifdef HAVE_LIBACARS
-		if (!R.skip_reassembly) {
+		if (!R.skip_reassembly)
 			len += snprintf(buf + len, bufsz - len, "\nReassembly: %s", la_reasm_status_name_get(msg->reasm_status));
-		}
 #endif
 	}
 
@@ -472,7 +471,7 @@ static int fmt_oneline(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, s
 		if (*pstr == '\n' || *pstr == '\r')
 			*pstr = ' ';
 
-	len = snprintf(buf, bufsz, "#%1d (L:%+5.1f E:%1d) ", chn + 1, msg->lvl, msg->err);
+	len = snprintf(buf, bufsz, "#%1d (L:%+5.1f/%.1f E:%1d) ", chn + 1, msg->lvl, msg->nf, msg->err);
 
 	if (R.inmode != IN_SNDFILE)
 		len += fmt_date(tv, buf + len, bufsz - len);
@@ -557,7 +556,7 @@ static flight_t *addFlight(acarsmsg_t *msg, int chn, struct timeval tv)
 static int fmt_json(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, size_t bufsz)
 {
 	oooi_t oooi = {0};
-	float freq = R.channels[chn].Fr / 1000000.0;
+	float freq = R.channels[chn].Fr / 1000000.0F;
 	cJSON *json_obj;
 	int ok = 0;
 	char convert_tmp[8];
@@ -575,6 +574,8 @@ static int fmt_json(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, size
 	cJSON_AddRawToObject(json_obj, "freq", convert_tmp);
 	snprintf(convert_tmp, sizeof(convert_tmp), "%2.1f", msg->lvl);
 	cJSON_AddRawToObject(json_obj, "level", convert_tmp);
+	snprintf(convert_tmp, sizeof(convert_tmp), "%.1f", msg->nf);
+	cJSON_AddRawToObject(json_obj, "noise", convert_tmp);
 	cJSON_AddNumberToObject(json_obj, "error", msg->err);
 	snprintf(convert_tmp, sizeof(convert_tmp), "%c", msg->mode);
 	cJSON_AddStringToObject(json_obj, "mode", convert_tmp);
@@ -696,18 +697,9 @@ static int fmt_monitor(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, s
 			len += snprintf(buf + len, bufsz - len, "%c", (fl->chm & (1 << i)) ? 'x' : '.');
 		len += snprintf(buf + len, bufsz - len, " ");
 		len += fmt_time(fl->ts, buf + len, bufsz - len);
-		if (fl->oooi.sa[0])
-			len += snprintf(buf + len, bufsz - len, " %4s ", fl->oooi.sa);
-		else
-			len += snprintf(buf + len, bufsz - len, "      ");
-		if (fl->oooi.da[0])
-			len += snprintf(buf + len, bufsz - len, " %4s ", fl->oooi.da);
-		else
-			len += snprintf(buf + len, bufsz - len, "      ");
-		if (fl->oooi.eta[0])
-			len += snprintf(buf + len, bufsz - len, " %4s ", fl->oooi.eta);
-		else
-			len += snprintf(buf + len, bufsz - len, "      ");
+		len += snprintf(buf + len, bufsz - len, " %4s ", fl->oooi.sa[0] ? fl->oooi.sa : "    ");
+		len += snprintf(buf + len, bufsz - len, " %4s ", fl->oooi.da[0] ? fl->oooi.da : "    ");
+		len += snprintf(buf + len, bufsz - len, " %4s ", fl->oooi.eta[0] ? fl->oooi.eta: "    ");
 		len += snprintf(buf + len, bufsz - len, "\n");
 
 		fl = fl->next;
@@ -718,7 +710,9 @@ static int fmt_monitor(acarsmsg_t *msg, int chn, struct timeval tv, char *buf, s
 
 void outputmsg(const msgblk_t *blk)
 {
+#ifdef HAVE_LIBACARS
 	uint8_t *reassembled_msg = NULL;
+#endif
 	acarsmsg_t msg;
 	int i, outflg = 0;
 	flight_t *fl = NULL;
@@ -727,6 +721,7 @@ void outputmsg(const msgblk_t *blk)
 	/* fill msg struct */
 	memset(&msg, 0, sizeof(msg));
 	msg.lvl = blk->lvl;
+	msg.nf = blk->nf;
 	msg.err = blk->err;
 
 	msg.mode = blk->txt.d.mode;

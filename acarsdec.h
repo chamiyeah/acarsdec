@@ -30,13 +30,17 @@
 #include <libacars/reassembly.h>
 #endif
 
-#define ACARSDEC_VERSION "4.1"
+#ifndef VERSION
+#define ACARSDEC_VERSION "4.4.1"
+#else
+#define ACARSDEC_VERSION VERSION
+#endif
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 255
 #endif
 
-#define INTRATE 12500U	// 12.5kHz: ACARS is 2400Bd NRZI, AM 10kHz BW with a 1800Hz Fc, 1200Hz shift MSK.
+#define INTRATE 12000U	// 12kHz: ACARS is 2400Bd NRZI, AM 10kHz BW with a 1800Hz Fc, 1200Hz shift MSK.
 #define DMBUFSZ	1024U
 
 #define ARRAY_SIZE(x)	(sizeof(x) / sizeof(x[0]))
@@ -54,7 +58,7 @@
 typedef struct mskblk_s {
 	struct mskblk_s *prev;
 	struct timeval tv;
-	float lvl;
+	float lvl, nf;
 	uint8_t chn;	// there will never be 255 channels
 	uint8_t txtlen;
 	uint8_t err;
@@ -88,7 +92,7 @@ typedef struct {
 	char be;
 	char msn[4];		// only for libacars - null-terminated copy of msg.no[0-3]
 	int err;
-	float lvl;
+	float lvl, nf;
 #ifdef HAVE_LIBACARS
 	la_reasm_status reasm_status;
 	la_proto_node *decoded_tree;
@@ -98,23 +102,26 @@ typedef struct {
 
 typedef struct {
 	msgblk_t *blk;
-	float complex *oscillator;
+	float complex *restrict oscillator;	// scaled oversampled INTRATE oscillator
+	float *restrict dm_buffer;		// INTRATE-sampled signal magnitude buffer
+	float complex *restrict inb;		// oversampled bit circular buffer
+	float MskPhi;				// MSK oscillator phase
+	float MskDphi;				// MSK oscillator phase offset
+	float MskDf;				// MSK oscillator phase offset integral
+	float MskMag;				// signal magnitude moving average
+	float MskPwr;				// signal power moving average (average of magnitude squared)
+	float MskNF;				// noise floor moving average (average of magnitude outside of msg blocks)
+	float MskClk;				// MSK bit clock
+	unsigned int MskS;			// MSK sample index
+	unsigned int idx;			// `inb` buffer index
 
-	float *restrict dm_buffer;		// INTRATE-sampled signal buffer
-	float complex *inb;
-	double MskPhi;
-	double MskDf;
-	float MskLvl;
-	float MskClk;
-	unsigned int MskS, idx;
+	unsigned int Fr;			// channel frequency (in Hz)
 
-	unsigned int Fr;		// channel frequency (in Hz)
-
-	enum { PREKEY, SYNC, SOH1, TXT, CRC1, CRC2, END } Acarsstate;
-	uint8_t chn;
-	int8_t count;
-	uint8_t nbits;
-	uint8_t outbits;
+	enum { PREKEY, SYNC, SOH1, TXT, CRC1, CRC2, END } Acarsstate;	// current state of the ACARS decoder state machine
+	uint8_t chn;				// channel number
+	int8_t count;				// counter for number of heard PREKEY sync bytes
+	uint8_t outbits;			// MSK-decoded bits buffer
+	uint8_t nbits;				// bits remaining to populate in `outbits`
 } channel_t;
 
 typedef struct output_s {

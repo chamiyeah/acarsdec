@@ -1,4 +1,4 @@
-// 2024 changes (C) 2024 Thibaut VARENE
+// 2024+ changes (C) 2024-2025 Thibaut VARENE
 
 #include <complex.h>
 #include <math.h>
@@ -19,17 +19,69 @@
 
 static SoapySDRDevice *dev = NULL;
 
+static int comp_range_pointer(const void *p1, const void *p2) {
+	SoapySDRRange *r1 = (SoapySDRRange *) p1;
+	SoapySDRRange *r2 = (SoapySDRRange *) p2;
+	if (r1->maximum < r2->maximum) {
+		return -1;
+	}
+	if (r1->maximum > r2->maximum) {
+		return 1;
+	}
+	return 0;
+}
+
+static unsigned int soapy_ratemult(const SoapySDRDevice *device, const int direction, const size_t channel)
+{
+	unsigned int minsr, mult = 0;
+	SoapySDRRange *sr_range;
+	size_t i, len = 0;
+
+	// compute minimum suitable samplerate
+	minsr = R.rateMult ? R.rateMult * INTRATE : min_multiplier(R.minFc, R.maxFc) * INTRATE;
+
+	// parse list of supported SR - XXX TODO we ignore the step size
+	sr_range = SoapySDRDevice_getSampleRateRange(device, direction, channel, &len);
+	// we need an ascending ordered list, some modules do not provide that
+	qsort(sr_range, len, sizeof(*sr_range), comp_range_pointer);
+	for (i = 0; i < len; i++) {
+		// if (max < minsr) continue
+		if (sr_range[i].maximum < (double)minsr)
+			continue;
+
+		// if (min > minsr)
+		if (sr_range[i].minimum > (double)minsr) {
+			if (R.rateMult)
+				break;	// user selected multiplier is invalid
+
+			// otherwise try to adjust minsr upwards
+			if (sr_range[i].minimum == sr_range[i].maximum) {
+				// min==max but not integer multiple of INTRATE => can't use this discrete SR
+				if (fmod(sr_range[i].minimum, (double)INTRATE))
+					continue;
+			}
+
+			// else either min==max and is an integer multiple of INTRATE or min < max
+			// XXX in the latter case assume that minimum + INTRATE < maximum
+			mult = (unsigned int)ceil(sr_range[i].minimum / (double)INTRATE);
+			break;
+		}
+
+		// else min <= minsr => use as is
+		mult = minsr / INTRATE;
+		break;
+	}
+
+	return mult;
+}
+
 int initSoapy(char *optarg)
 {
 	int r;
-	unsigned int Fc;
+	unsigned int Fc, mult;
 
 	if (!optarg)
 		return 1;	// cannot happen after getopt()
-
-	Fc = find_centerfreq(R.minFc, R.maxFc, R.rateMult);
-	if (!Fc)
-		return 1;
 
 	dev = SoapySDRDevice_makeStrArgs(optarg);
 	if (dev == NULL) {
@@ -37,7 +89,26 @@ int initSoapy(char *optarg)
 		return -1;
 	}
 
-	if (R.gain <= -10.0) {
+	mult = soapy_ratemult(dev, SOAPY_SDR_RX, 0);
+
+	if (!mult) {
+		if (R.rateMult)
+			fprintf(stderr, ERRPFX "Unable to use selected rate multiplier: out of range\n");
+		else
+			fprintf(stderr, ERRPFX "Device does not support high enough sample rate for target bandwidth: frequencies too far aparts\n");
+		return 1;
+	}
+
+	R.rateMult = mult;
+
+	if (!R.gain)
+		R.gain = -10;
+
+	Fc = find_centerfreq(R.minFc, R.maxFc, R.rateMult);
+	if (!Fc)
+		return 1;
+
+	if (R.gain <= -10.0F) {
 		vprerr("Tuner gain: AGC\n");
 		r = SoapySDRDevice_setGainMode(dev, SOAPY_SDR_RX, 0, 1);
 		if (r != 0)

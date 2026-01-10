@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2017 Thierry Leconte
+ *  Copyright (c) 2007,2025 Thierry Leconte
  *
  *   
  *   This code is free software; you can redistribute it and/or modify
@@ -19,33 +19,41 @@
 #include "acarsdec.h"
 #include "acars.h"
 
-#define FLEN ((INTRATE / 1200) + 1)
-#define MFLTOVER 12U
-#define FLENO (FLEN * MFLTOVER + 1)
-static float h[FLENO];
+#define CEILING(x,y) (((x) + (y) - 1) / (y))
+
+#define MSKFREQMARK 2400
+#define MSKFREQSPACE 1200
+#define MSKFREQCNTR  ((MSKFREQSPACE+MSKFREQMARK)/2)
+
+#define BITLEN CEILING(INTRATE, MSKFREQSPACE)
+#define MFLTOVER 240U
+#define MFLTLEN (BITLEN * MFLTOVER + 1)
+
+#if INTRATE % MSKFREQSPACE
+ #warning INTRATE is not a multiple of MSQFREQSPACE, code may give odd results
+#endif
+
+static float h[MFLTLEN];
 
 int initMsk(channel_t *ch)
 {
 	unsigned int i;
 
-	ch->MskPhi = ch->MskClk = 0;
-	ch->MskS = 0;
-
-	ch->MskDf = 0;
+	ch->MskClk = ch->MskS = 0;
+	ch->MskPhi = ch->MskDphi = ch->MskDf = 0;
 
 	ch->idx = 0;
-	ch->inb = calloc(FLEN, sizeof(*ch->inb));
+	ch->inb = calloc(BITLEN, sizeof(*ch->inb));
 	if (ch->inb == NULL) {
 		perror(NULL);
 		return -1;
 	}
 
-	if (ch->chn == 0)
-		for (i = 0; i < FLENO; i++) {
-			h[i] = cosf(2.0 * M_PI * 600.0 / INTRATE / MFLTOVER * (signed)(i - (FLENO - 1) / 2));
-			if (h[i] < 0)
-				h[i] = 0;
-		}
+	if (ch->chn == 0) {
+		/* precompute half-wave matched filter table */
+		for (i = 0; i < MFLTLEN; i++)
+			h[i] = sinf(M_PI * MSKFREQSPACE * i / INTRATE / MFLTOVER) ;
+	}
 
 	return 0;
 }
@@ -54,78 +62,85 @@ int initMsk(channel_t *ch)
 static inline void putbit(float v, channel_t *ch)
 {
 	ch->outbits >>= 1;
-	if (v > 0) {
+	if (v > 0)
 		ch->outbits |= 0x80;
-	}
 
-	ch->nbits--;
-	if (ch->nbits <= 0)
+	if (--ch->nbits == 0)
 		decodeAcars(ch);
 }
 
-const float PLLG = 38e-4;
-const float PLLC = 0.52;
+static const float PLLKi = 71e-7/BITLEN;
+static const float PLLKp = 60e-3/BITLEN;
 
 void demodMSK(channel_t *ch, int len)
 {
 	/* MSK demod */
 	int n;
 	unsigned int idx = ch->idx;
-	double p = ch->MskPhi;
+	float p = ch->MskPhi;
+	float s;
 
 	for (n = 0; n < len; n++) {
 		float in;
-		double s;
 		float complex v;
 		unsigned int j, o;
 
-		/* VCO */
-		s = 1800.0 / INTRATE * 2.0 * M_PI + ch->MskDf;
-		p += s;
-		if (p >= 2.0 * M_PI)
-			p -= 2.0 * M_PI;
-
-		/* mixer */
-		in = ch->dm_buffer[n];
-		ch->inb[idx] = in * cexp(-p * I);
-		idx = (idx + 1) % FLEN;
+		s = (float)(2 * M_PI) * (MSKFREQCNTR) / INTRATE + ch->MskDphi;
 
 		/* bit clock */
 		ch->MskClk += s;
-		if (ch->MskClk >= 3 * M_PI / 2.0 - s / 2) {
-			double dphi;
+		if (ch->MskClk > (float)(3 * M_PI_2)) {
+			float dphi;
 			float vo, lvl;
 
-			ch->MskClk -= 3 * M_PI / 2.0;
+			ch->MskClk -= (float)(3 * M_PI_2);
 
 			/* matched filter */
-			o = MFLTOVER * (ch->MskClk / s + 0.5);
+			o = MFLTOVER * (ch->MskClk / s );
 			if (o > MFLTOVER)
 				o = MFLTOVER;
-			for (v = 0, j = 0; j < FLEN; j++, o += MFLTOVER)
-				v += h[o] * ch->inb[(j + idx) % FLEN];
+			for (v = 0, j = 0; j < BITLEN; j++, o += MFLTOVER)
+				v += h[o] * ch->inb[(j + idx) % BITLEN];
 
 			/* normalize */
-			lvl = cabsf(v);
-			v /= lvl + 1e-8;
+			lvl = cabsf(v) + 1e-8F;
+			v /= lvl;
 
-			/* update level exp moving average. Average over last 16*8 bits */
-			lvl = lvl * lvl;
-			ch->MskLvl = ch->MskLvl - (1.0F/128.0F * (ch->MskLvl - lvl));
+			/* update magnitude exp moving average. Average over last 8 bits */
+			ch->MskMag = ch->MskMag - (1.0F/8.0F * (ch->MskMag - lvl));
 
 			if (ch->MskS & 1) {
+				// Q
 				vo = cimagf(v);
 				dphi = (vo >= 0) ? -crealf(v) : crealf(v);
 			} else {
+				// I
 				vo = crealf(v);
 				dphi = (vo >= 0) ? cimagf(v) : -cimagf(v);
 			}
+
 			putbit((ch->MskS & 2) ? -vo : vo, ch);
 			ch->MskS++;
 
-			/* PLL filter */
-			ch->MskDf = PLLC * ch->MskDf + (1.0 - PLLC) * PLLG * dphi;
+			// lock on signal once ACARS header has been / is being heard
+			if (PREKEY != ch->Acarsstate || ch->count) {
+				/* PLL as a PI controller */
+				ch->MskDf += PLLKi * dphi;
+				ch->MskDphi = ch->MskDf + PLLKp * dphi;
+			}
+			else	// otherwise don't even try to lock. XXX REVISIT: use a 2nd order / 1st order PLL split?
+				ch->MskDf = ch->MskDphi = 0;
 		}
+
+		/* VCO */
+		p += s;
+		if (p >= (float)(2 * M_PI))
+			p -= (float)(2 * M_PI);
+
+		/* mixer */
+		in = ch->dm_buffer[n];
+		ch->inb[idx] = in * cexpf(-p * I);
+		idx = (idx + 1) % BITLEN;
 	}
 
 	ch->idx = idx;

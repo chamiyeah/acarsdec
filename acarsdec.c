@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2015 Thierry Leconte
+ *  Copyright (c) 2007-2022,2025 Thierry Leconte
  *  Copyright (c) 2024 Thibaut VARENE
  *
  *   
@@ -59,8 +59,6 @@
 
 runtime_t R = {
 	.mdly = 600,
-	.lnaState = 2,
-	.GRdB = 20,
 };
 
 static void print_available_ins(void)
@@ -122,22 +120,21 @@ static void print_available_ins(void)
 
 static void usage(void)
 {
-	fprintf(stderr,
-		"Acarsdec %s Copyright (c) 2022 Thierry Leconte, (c) 2024 Thibaut VARENE\n", ACARSDEC_VERSION);
+	fprintf(stderr, "Acarsdec %s Copyright (c) 2007-2022,2025 Thierry Leconte, (c) 2024-2025 Thibaut VARENE\n", ACARSDEC_VERSION);
 #ifdef HAVE_LIBACARS
 	fprintf(stderr, "(libacars %s)\n", LA_VERSION);
 #endif
-	fprintf(stderr, "\nUsage: acarsdec  [-t secs] [-A] [-b 'labels,..'] [-e] [-i station_id] [--statsd host=ip,port=1234] --output FORMAT:DESTINATION:PARAMS [--output ...]");
+	fprintf(stderr, "\nUsage: acarsdec [-A] [-b 'labels,..'] [-e] [-i station_id] [-t secs] [--statsd host=ip,port=1234] --output FORMAT:DESTINATION:PARAMS [--output ...]");
 #ifdef HAVE_LIBACARS
 	fprintf(stderr, " [--skip-reassembly]");
 #endif
 	print_available_ins();
 	fprintf(stderr,
 		"\n\n"
-		" -i <stationid>\t\t: station id used in acarsdec network format (default: hostname)\n"
 		" -A\t\t\t: don't output uplink messages (ie : only aircraft messages)\n"
-		" -e\t\t\t: don't output empty messages (ie : _d,Q0, etc ...)\n"
 		" -b <filter>\t\t: filter output by label (ex: -b \"H1:Q0\" : only output messages  with label H1 or Q0)\n"
+		" -e\t\t\t: don't output empty messages (ie : _d,Q0, etc ...)\n"
+		" -i <stationid>\t\t: station id used in acarsdec network format (default: hostname)\n"
 		" -t <seconds>\t\t: set forget time (TTL) to <seconds> for flight routes (affects monitor and routejson, default: 600)\n"
 #ifdef HAVE_LIBACARS
 		" --skip-reassembly\t: disable reassembling fragmented ACARS messages\n"
@@ -157,35 +154,37 @@ static void usage(void)
 	fprintf(stderr,
 		"\n rtlopts:\n"
 		" --rtlsdr <device>\t: decode from rtl dongle number <device> or S/N <device>\n"
-		" -g <gain>\t\t: set rtl gain in db (0 to 49.6; >52 and -10 will result in AGC; default is AGC)\n"
-		" -p <ppm>\t\t: set rtl ppm frequency correction (default: 0)\n"
-		" -m <rateMult>\t\t: set rtl sample rate multiplier: 160 for 2 MS/s or 192 for 2.4 MS/s (default: 160)\n"
 		" -B <bias>\t\t: enable (1) or disable (0) the bias tee (default is 0)\n"
-		" -c <freq>\t\t: set center frequency to tune to in MHz, e.g. 131.800 (default: automatic)\n");
+		" -c <freq>\t\t: set center frequency to tune to in MHz, e.g. 131.800 (default: automatic)\n"
+		" -g <gain>\t\t: set rtl gain in db (0 to 49.6; >52 and -10 will result in AGC; default is AGC)\n"
+		" -m <rateMult>\t\t: set rtl sample rate multiplier: sample rate is <rateMult> * 12000 S/s (default: automatic)\n"
+		" -p <ppm>\t\t: set rtl ppm frequency correction (default: 0)\n");
 #endif
 #ifdef WITH_AIR
 	fprintf(stderr,
 		"\n airspyopts:\n"
 		" --airspy <device>\t: decode from airspy dongle number <device> or hex serial <device>\n"
+		" -B <bias>\t\t: enable (1) or disable (0) the bias tee (default is 0)\n"
+		" -c <freq>\t\t: set center frequency to tune to in MHz, e.g. 131.800 (default: automatic)\n"
 		" -g <linearity_gain>\t: set linearity gain [0-21] (default: 18)\n");
 #endif
 #ifdef WITH_SDRPLAY
 	fprintf(stderr,
 		"\n sdrplayopts:\n"
 		" --sdrplay\t\t: decode from sdrplay\n"
-		" -L <lnaState>\t: set the lnaState (depends on the device)\n"
+		" -c <freq>\t\t: set center frequency to tune to in MHz, e.g. 131.800 (default: automatic)\n"
 		" -G <GRdB>\t\t: gain reduction in dB's, range 20 .. 59 (default: -100 is autogain)\n"
-		" -c <freq>\t\t: set center frequency to tune to in MHz, e.g. 131.800 (default: automatic)\n");
+		" -L <lnaState>\t: set the lnaState (depends on the device)\n");
 #endif
 #ifdef WITH_SOAPY
 	fprintf(stderr,
 		"\n soapyopts:\n"
 		" --soapysdr <params>\t: decode from a SoapySDR designed by device_string <params>\n"
-		" -g <gain>\t\t: set gain in db (-10 will result in AGC; default is AGC)\n"
-		" -p <ppm>\t\t: set ppm frequency correction (default: 0)\n"
+		" -a <antenna>\t\t: set antenna port to use (default: soapy default)\n"
 		" -c <freq>\t\t: set center frequency to tune to in MHz, e.g. 131.800 (default: automatic)\n"
-		" -m <rateMult>\t\t: set sample rate multiplier: 160 for 2 MS/s or 192 for 2.4 MS/s (default: 160)\n"
-		" -a <antenna>\t\t: set antenna port to use (default: soapy default)\n");
+		" -g <gain>\t\t: set gain in db (-10 will result in AGC; default is AGC)\n"
+		" -m <rateMult>\t\t: set sample rate multiplier: sample rate is <rateMult> * 12000 S/s (default: automatic)\n"
+		" -p <ppm>\t\t: set ppm frequency correction (default: 0)\n");
 #endif
 	exit(1);
 }
@@ -239,7 +238,8 @@ static int parse_freqs(char **argv, const int argind)
 	ind = argind;
 	while ((argF = argv[ind])) {
 		ind++;
-		freq = (((unsigned int)(1000000 * atof(argF)) + INTRATE / 2) / INTRATE) * INTRATE;
+		// round freq to nearest kHz value
+		freq = (((unsigned int)(1000000 * atof(argF)) + 1000 / 2) / 1000) * 1000;
 		if (freq < 118000000 || freq > 138000000)
 			continue;
 
@@ -283,9 +283,11 @@ int main(int argc, char **argv)
 		{ "soapysdr", required_argument, NULL, IN_SOAPY },
 #endif
 		{ "verbose", no_argument, NULL, 'v' },
-		{ "skip-reassembly", no_argument, NULL, -1 },
-		{ "output", required_argument, NULL, -2 },
+		{ "output", required_argument, NULL, -2 },	// -1 is EOF
 		{ "statsd", required_argument, NULL, -3 },
+#ifdef HAVE_LIBACARS
+		{ "skip-reassembly", no_argument, NULL, -4 },
+#endif
 		{ NULL, 0, NULL, 0 }
 	};
 	char sys_hostname[HOST_NAME_MAX + 1];
@@ -299,11 +301,6 @@ int main(int argc, char **argv)
 	res = 0;
 	while ((c = getopt_long(argc, argv, "hvt:g:m:a:Aep:c:i:L:G:b:B:", long_opts, NULL)) != EOF) {
 		switch (c) {
-#ifdef HAVE_LIBACARS
-		case -1:
-			R.skip_reassembly = 1;
-			break;
-#endif
 		case -2:
 			res = setup_output(optarg);
 			if (res)
@@ -312,6 +309,11 @@ int main(int argc, char **argv)
 		case -3:
 			statsdarg = optarg;
 			break;
+#ifdef HAVE_LIBACARS
+		case -4:
+			R.skip_reassembly = 1;
+			break;
+#endif
 		case 'v':
 			R.verbose = 1;
 			break;
@@ -346,15 +348,15 @@ int main(int argc, char **argv)
 		case 'm':
 			R.rateMult = (unsigned)atoi(optarg);
 			break;
+		case 'B':
+			R.bias = atoi(optarg);
+			break;
 #ifdef WITH_RTL
 		case IN_RTL:
 			if (R.inmode)
 				errx(-1, "Only 1 input allowed");
 			R.inmode = IN_RTL;
 			inarg = optarg;
-			break;
-		case 'B':
-			R.bias = atoi(optarg);
 			break;
 #endif
 #ifdef WITH_SDRPLAY
@@ -428,39 +430,26 @@ int main(int argc, char **argv)
 #endif
 #ifdef WITH_SNDFILE
 	case IN_SNDFILE:
-		if (!R.rateMult)
-			R.rateMult = 1U;
 		res = initSoundfile(inarg);
 		break;
 #endif
 #ifdef WITH_RTL
 	case IN_RTL:
-		if (!R.rateMult)
-			R.rateMult = 160U;
-		if (!R.gain)
-			R.gain = -10;
 		res = initRtl(inarg);
 		break;
 #endif
 #ifdef WITH_AIR
 	case IN_AIR:
-		if (!R.gain)
-			R.gain = 18;
 		res = initAirspy(inarg);
 		break;
 #endif
 #ifdef WITH_SDRPLAY
 	case IN_SDRPLAY:
-		R.rateMult = 160U;
 		res = initSdrplay();
 		break;
 #endif
 #ifdef WITH_SOAPY
 	case IN_SOAPY:
-		if (!R.rateMult)
-			R.rateMult = 160U;
-		if (!R.gain)
-			R.gain = -10;
 		res = initSoapy(inarg);
 		break;
 #endif

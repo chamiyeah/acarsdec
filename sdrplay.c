@@ -30,15 +30,13 @@
 #include "lib.h"
 #include <mirsdrapi-rsp.h>
 
-#define SDRPLAY_MULT 160
+#warning "Untested - help wanted"
+
+#define SDRPLAY_MULT 170U	// supports arbitrary SR between 2 and 10MSps
 #define SDRPLAY_INRATE (INTRATE * SDRPLAY_MULT)
 
 #define ERRPFX	"ERROR: SDRplay: "
 #define WARNPFX	"WARNING: SDRplay: "
-
-extern void *compute_thread(void *arg);
-
-static int hwVersion;
 
 static int RSP1_Table[] = { 0, 24, 19, 43 };
 
@@ -74,6 +72,14 @@ int initSdrplay(void)
 	mir_sdr_DeviceT devDesc[4];
 	mir_sdr_ErrT err;
 
+	R.rateMult = SDRPLAY_MULT;
+
+	if (!R.GRdB)
+		R.GRdB = -100;
+
+	if (!R.lnaState)
+		R.lnaState = 2;
+
 	Fc = find_centerfreq(R.minFc, R.maxFc, SDRPLAY_MULT);
 	if (Fc == 0)
 		return 1;
@@ -96,7 +102,7 @@ int initSdrplay(void)
 	}
 
 	deviceIndex = 0;
-	hwVersion = devDesc[deviceIndex].hwVer;
+	int hwVersion = devDesc[deviceIndex].hwVer;
 	fprintf(stderr, "%s %s\n", devDesc[deviceIndex].DevNm, devDesc[deviceIndex].SerNo);
 	err = mir_sdr_SetDeviceIdx(deviceIndex);
 	if (err != mir_sdr_Success) {

@@ -32,6 +32,18 @@
  #include "soundfile.h"
 #endif
 
+/**
+ * Return the minimum sample rate multiplier suitable to cover the target frequency range.
+ * @param minFc lowest frequency in the range
+ * @param maxFc highest frequency in the range
+ * @return suitable multiplier
+ */
+unsigned int min_multiplier(unsigned int minFc, unsigned int maxFc)
+{
+	// default min multiplier - see find_centerfreq() for computation margins applied
+	return ((maxFc - minFc) + 4 * INTRATE + INTRATE) / INTRATE;
+}
+
 unsigned int find_centerfreq(unsigned int minFc, unsigned int maxFc, unsigned int multiplier)
 {
 	if (R.Fc)
@@ -43,27 +55,16 @@ unsigned int find_centerfreq(unsigned int minFc, unsigned int maxFc, unsigned in
 	}
 
 	// the original tried to pin the center frequency to one of the provided ACARS freqs
-	// there is no reason to do this, so keep this simple:
+	// there is no reason to do this (and in fact it's better to avoid the DC spike), so keep this simple:
 	return (maxFc + minFc) / 2;
-
-#if 0
-	for (Fc = Fd[nbch - 1] + 2 * INTRATE; Fc > Fd[0] - 2 * INTRATE; Fc--) {
-		for (n = 0; n < nbch; n++) {
-			if (abs(Fc - Fd[n]) > multiplier * INTRATE / 2 - 2 * INTRATE)
-				break;
-			if (abs(Fc - Fd[n]) < 2 * INTRATE)
-				break;
-			if (n > 0 && Fc - Fd[n - 1] == Fd[n] - Fc)
-				break;
-		}
-		if (n == nbch)
-			break;
-	}
-
-	return Fc;
-#endif
 }
 
+/**
+ * Allocate and init the internal oscillators.
+ * @param Fc the chosen center frequency
+ * @param multiplier the chosen oversampling multiplier
+ * @param scale the phasor scale (e.g. 1.0F for complex float32 phasors; 32768.0F for int16 phasors, ...)
+ */
 int channels_init_sdr(unsigned int Fc, unsigned int multiplier, float scale)
 {
 	unsigned int n, ind;
@@ -82,7 +83,7 @@ int channels_init_sdr(unsigned int Fc, unsigned int multiplier, float scale)
 		/* precompute a scaled, oversampled local INTRATE oscillator per channel
 		 mixing this oscillator with the received full-scale oversampled signal
 		 will provide a normalized signal at the channel frequency */
-		correctionPhase = (signed)(ch->Fr - Fc) / (float)(INTRATE * multiplier) * 2.0 * M_PI;
+		correctionPhase = (signed)(ch->Fr - Fc) / (float)(INTRATE * multiplier) * (float)(2 * M_PI);
 		vprerr("#%d: Fc = %uHz, Fr = %uHz, phase = % f (%+dHz)\n",
 		       n+1, Fc, ch->Fr, correctionPhase, (signed)(ch->Fr - Fc));
 		for (ind = 0; ind < multiplier; ind++)

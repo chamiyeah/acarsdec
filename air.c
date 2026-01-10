@@ -23,20 +23,23 @@
 #include <unistd.h>
 #include <string.h>
 #include <math.h>
+#include <inttypes.h>
 #include <libairspy/airspy.h>
 #include "acarsdec.h"
 #include "lib.h"
 #include "msk.h"
 
+#define ERRPFX	"ERROR: AIRSPY: "
+#define WARNPFX	"WARNING: AIRSPY: "
+
 static unsigned int AIRMULT;
 static unsigned int AIRINRATE;
 
 static struct airspy_device *device = NULL;
-extern void *compute_thread(void *arg);
 
+#if 0		// according to the webpage, this only works in real mode and we're no longer using that
 static const unsigned int r820t_hf[] = { 1953050, 1980748, 2001344, 2032592, 2060291, 2087988 };
 static const unsigned int r820t_lf[] = { 525548, 656935, 795424, 898403, 1186034, 1502073, 1715133, 1853622 };
-static float complex *chD;
 
 static unsigned int chooseFc(unsigned int minF, unsigned int maxF, int filter)
 {
@@ -53,7 +56,7 @@ static unsigned int chooseFc(unsigned int minF, unsigned int maxF, int filter)
 				break;
 
 		if (i < 0) {
-			fprintf(stderr, "Unable to use airspy R820T filter optimization, continuing.\n");
+			fprintf(stderr, WARNPFX "Unable to use airspy R820T filter optimization, continuing.\n");
 		} else {
 			fprintf(stderr, "Enabling airspy R820T filter optimization.\n");
 
@@ -71,6 +74,7 @@ static unsigned int chooseFc(unsigned int minF, unsigned int maxF, int filter)
 
 	return (((maxF + minF) / 2 + off + INTRATE / 2) / INTRATE * INTRATE);
 }
+#endif
 
 int initAirspy(char *optarg)
 {
@@ -84,21 +88,22 @@ int initAirspy(char *optarg)
 	int airspy_device_count = 0;
 	uint64_t *airspy_device_list = NULL;
 
-	chD = calloc(R.nbch, sizeof(*chD));
-	if (!chD) {
-		perror(NULL);
-		return -1;
-	}
+	if (!R.gain)
+		R.gain = 18;
+
+	if (R.rateMult)
+		fprintf(stderr, WARNPFX "user-provided rate multiplier ignored.\n");
+
+	if (R.ppm)
+		fprintf(stderr, WARNPFX "user-provided ppm correction ignored.\n");
 
 	// Request the total number of libairspy devices connected, allocate space, then request the list.
-	result = airspy_device_count = airspy_list_devices(NULL, 0);
-	if (result < 1) {
-		if (result == 0) {
-			fprintf(stderr, "No airspy devices found.\n");
-		} else {
-			fprintf(stderr, "airspy_list_devices() failed: %s (%d).\n", airspy_error_name(result), result);
-		}
-		airspy_exit();
+	airspy_device_count = airspy_list_devices(NULL, 0);
+	if (airspy_device_count < 1) {
+		if (airspy_device_count == 0)
+			fprintf(stderr, ERRPFX "No airspy devices found.\n");
+		else
+			fprintf(stderr, ERRPFX "airspy_list_devices() failed: %s (%d).\n", airspy_error_name(airspy_device_count), airspy_device_count);
 		return -1;
 	}
 
@@ -109,9 +114,8 @@ int initAirspy(char *optarg)
 	}
 	result = airspy_list_devices(airspy_device_list, airspy_device_count);
 	if (result != airspy_device_count) {
-		fprintf(stderr, "airspy_list_devices() failed.\n");
+		fprintf(stderr, ERRPFX "airspy_list_devices() failed.\n");
 		free(airspy_device_list);
-		airspy_exit();
 		return -1;
 	}
 
@@ -134,10 +138,10 @@ int initAirspy(char *optarg)
 
 	if ((optarg != argF) && (errno == 0)) {
 		if ((airspy_serial < airspy_device_count)) {
-			vprerr("Attempting to open airspy device slot #%lu with serial %016lx.\n", airspy_serial, airspy_device_list[airspy_serial]);
+			vprerr("Attempting to open airspy device slot #%" PRIu64 " with serial %016" PRIx64 ".\n", airspy_serial, airspy_device_list[airspy_serial]);
 			result = airspy_open_sn(&device, airspy_device_list[airspy_serial]);
 		} else {
-			vprerr("Attempting to open airspy serial 0x%016lx\n", airspy_serial);
+			vprerr("Attempting to open airspy serial 0x%016" PRIx64 "\n", airspy_serial);
 			result = airspy_open_sn(&device, airspy_serial);
 		}
 	}
@@ -150,170 +154,103 @@ int initAirspy(char *optarg)
 				break;
 		}
 	}
-	memset(airspy_device_list, 0, sizeof(*airspy_device_list) * airspy_device_count);
+
 	free(airspy_device_list);
 	airspy_device_list = NULL;
 
 	if (device == NULL) {
 		result = airspy_open(&device);
 		if (result != AIRSPY_SUCCESS) {
-			fprintf(stderr, "Failed to open any airspy device.\n");
-			airspy_exit();
+			fprintf(stderr, ERRPFX "Failed to open any airspy device.\n");
 			return -1;
 		}
 	}
 
 	/* init airspy */
 
-	// XXX REVIEW: airspy can do AIRSPY_SAMPLE_FLOAT32_IQ, like everyone else. Is there a reason to use real?
-	result = airspy_set_sample_type(device, AIRSPY_SAMPLE_FLOAT32_REAL);
+	result = airspy_set_sample_type(device, AIRSPY_SAMPLE_FLOAT32_IQ);
 	if (result != AIRSPY_SUCCESS) {
-		fprintf(stderr, "airspy_set_sample_type() failed: %s (%d)\n", airspy_error_name(result), result);
-		airspy_close(device);
-		airspy_exit();
-		return -1;
+		fprintf(stderr, ERRPFX "airspy_set_sample_type() failed: %s (%d)\n", airspy_error_name(result), result);
+		goto fail;
 	}
 
 	airspy_get_samplerates(device, &count, 0);
 	supported_samplerates = malloc(count * sizeof(*supported_samplerates));
 	if (supported_samplerates == NULL) {
 		perror(NULL);
-		airspy_close(device);
-		airspy_exit();
-		return -1;
-	}
-	airspy_get_samplerates(device, supported_samplerates, count);
-	for (i = 0; i < count; i++) {
-		if (supported_samplerates[i] > 10000000)
-			continue;
-		AIRINRATE = supported_samplerates[i];
-		AIRMULT = AIRINRATE / INTRATE;
-		if ((AIRMULT * INTRATE) == AIRINRATE)
-			break;
+		goto fail;
 	}
 
-	if (i >= count) {
-		fprintf(stderr, "did not find needed sampling rate\n");
-		airspy_close(device);
-		airspy_exit();
-		return -1;
+	airspy_get_samplerates(device, supported_samplerates, count);
+	int use_samplerate_index = -1;
+	for (i = 0; i < count; i++) {
+		uint32_t new_rate = supported_samplerates[i];
+		uint32_t new_mult = new_rate / INTRATE;
+		if ((new_mult * INTRATE) == new_rate) {
+			// new_rate is usable if it's a divisible by INTRATE
+			if (use_samplerate_index == -1 || new_rate < AIRINRATE) {
+				// use new_rate if we don't have a rate set yet or if it's lower than the other one
+				// for airspy mini this is just gonna end up being 3 MSPS which should be sufficient
+				// airspy R2 has rates 2.5 and 10 MSPS which both aren't divisable so it's not
+				// usable with 12 kHz INTRATE
+				AIRINRATE = new_rate;
+				AIRMULT = new_mult;
+				use_samplerate_index = i;
+			}
+		}
 	}
 
 	free(supported_samplerates);
 
+	if (use_samplerate_index == -1) {
+		fprintf(stderr, ERRPFX "did not find suitable sampling rate\n");
+		goto fail;
+	}
+
 	vprerr("Using %d sampling rate\n", AIRINRATE);
 
-	result = airspy_set_samplerate(device, i);
+	result = airspy_set_samplerate(device, use_samplerate_index);
 	if (result != AIRSPY_SUCCESS) {
-		fprintf(stderr, "airspy_set_samplerate() failed: %s (%d)\n", airspy_error_name(result), result);
-		airspy_close(device);
-		airspy_exit();
-		return -1;
+		fprintf(stderr, ERRPFX "airspy_set_samplerate() failed: %s (%d)\n", airspy_error_name(result), result);
+		goto fail;
 	}
 
 	/* enable packed samples */
 	airspy_set_packing(device, 1);
 
-	result = airspy_set_linearity_gain(device, (int)R.gain);
-	if (result != AIRSPY_SUCCESS) {
-		fprintf(stderr, "airspy_set_vga_gain() failed: %s (%d)\n", airspy_error_name(result), result);
-	}
+	result = airspy_set_rf_bias(device, (uint8_t) R.bias);
+	if (result != AIRSPY_SUCCESS)
+		fprintf(stderr, WARNPFX "airspy_set_rf_bias() failed: %s (%d)\n", airspy_error_name(result), result);
 
-	Fc = chooseFc(R.minFc, R.maxFc, AIRINRATE == 5000000);
-	if (Fc == 0) {
-		fprintf(stderr, "Frequencies too far apart\n");
-		return 1;
-	}
+	result = airspy_set_linearity_gain(device, (int)R.gain);
+	if (result != AIRSPY_SUCCESS)
+		fprintf(stderr, WARNPFX "airspy_set_linearity_gain() failed: %s (%d)\n", airspy_error_name(result), result);
+
+	Fc = find_centerfreq(R.minFc, R.maxFc, AIRMULT);
+	if (!Fc)
+		goto fail;
 
 	result = airspy_set_freq(device, Fc);
 	if (result != AIRSPY_SUCCESS) {
-		fprintf(stderr, "airspy_set_freq() failed: %s (%d)\n", airspy_error_name(result), result);
-		airspy_close(device);
-		airspy_exit();
-		return -1;
+		fprintf(stderr, ERRPFX "airspy_set_freq() failed: %s (%d)\n", airspy_error_name(result), result);
+		goto fail;
 	}
 	vprerr("Set freq. to %d hz\n", Fc);
 
-	/* computes mixers osc. */
-	for (n = 0; n < R.nbch; n++) {
-		channel_t *ch = &(R.channels[n]);
-		int i;
-		double AMFreq, Ph;
-
-		ch->oscillator = malloc(AIRMULT * sizeof(*ch->oscillator));
-		ch->dm_buffer = malloc(DMBUFSZ * sizeof(*ch->dm_buffer));
-		if (ch->oscillator == NULL || ch->dm_buffer == NULL) {
-			perror(NULL);
-			airspy_close(device);
-			airspy_exit();
-			return -1;
-		}
-
-		AMFreq = 2.0 * M_PI * (Fc - ch->Fr + (double)AIRINRATE / 4) / (double)(AIRINRATE);
-		for (i = 0, Ph = 0; i < AIRMULT; i++) {
-			ch->oscillator[i] = cexpf(Ph * -I) / AIRMULT;
-			Ph += AMFreq;
-			if (Ph > 2.0 * M_PI)
-				Ph -= 2.0 * M_PI;
-			if (Ph < -2.0 * M_PI)
-				Ph += 2.0 * M_PI;
-		}
-	}
+	result = channels_init_sdr(Fc, AIRMULT, 1.0F);
+	if (result)
+		goto fail;
 
 	return 0;
+
+fail:
+	airspy_close(device);
+	return -1;
 }
 
 static int rx_callback(airspy_transfer_t *transfer)
 {
-	static int ind = 0;
-	float *pt_rx_buffer;
-	int n, i;
-	int bo, be, ben, nbk;
-
-	pt_rx_buffer = (float *)(transfer->samples);
-
-	bo = AIRMULT - ind;
-	nbk = (transfer->sample_count - bo) / AIRMULT;
-	be = nbk * AIRMULT + bo;
-	ben = transfer->sample_count - be;
-
-	for (n = 0; n < R.nbch; n++) {
-		channel_t *ch = &(R.channels[n]);
-		float S;
-		int k, bn, m;
-		float complex D;
-
-		D = chD[n];
-
-		/* compute */
-		m = 0;
-		k = 0;
-		for (i = ind; i < AIRMULT; i++, k++) {
-			S = pt_rx_buffer[k];
-			D += ch->oscillator[i] * S;
-		}
-		ch->dm_buffer[m++] = cabsf(D);
-
-		for (bn = 0; bn < nbk; bn++) {
-			D = 0;
-			for (i = 0; i < AIRMULT; i++, k++) {
-				S = pt_rx_buffer[k];
-				D += ch->oscillator[i] * S;
-			}
-			ch->dm_buffer[m++] = cabsf(D);
-		}
-
-		D = 0;
-		for (i = 0; i < ben; i++, k++) {
-			S = pt_rx_buffer[k];
-			D += ch->oscillator[i] * S;
-		}
-		chD[n] = D;
-
-		demodMSK(ch, m);
-	}
-	ind = ben;
-
+	channels_mix_phasors(transfer->samples, transfer->sample_count, AIRMULT);
 	return 0;
 }
 
@@ -323,9 +260,8 @@ int runAirspySample(void)
 
 	result = airspy_start_rx(device, rx_callback, NULL);
 	if (result != AIRSPY_SUCCESS) {
-		fprintf(stderr, "airspy_start_rx() failed: %s (%d)\n", airspy_error_name(result), result);
+		fprintf(stderr, ERRPFX "airspy_start_rx() failed: %s (%d)\n", airspy_error_name(result), result);
 		airspy_close(device);
-		airspy_exit();
 		return -1;
 	}
 
@@ -334,8 +270,7 @@ int runAirspySample(void)
 	}
 
 	airspy_stop_rx(device);
-
-	free(chD);
+	airspy_close(device);
 
 	return 0;
 }
